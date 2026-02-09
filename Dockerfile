@@ -1,28 +1,43 @@
 # syntax=docker/dockerfile:1
-FROM python:3.14-slim
 
-LABEL io.modelcontextprotocol.server.name="io.github.vulnersCom/vulners-mcp"
-ENV FASTMCP_HOST=0.0.0.0
-ENV FASTMCP_PORT=8000
+# --- build stage: install dependencies ---
+FROM python:3.14.3-slim-trixie AS build
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    POETRY_VERSION=2.2.0 \
-    POETRY_VIRTUALENVS_CREATE=false \
-    POETRY_NO_INTERACTION=1 \
-    FAST_MCP_HOST=0.0.0.0
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
-RUN pip install "poetry==${POETRY_VERSION}"
-
-# deps layer
-COPY pyproject.toml poetry.lock* ./
-RUN poetry install --no-root --only main --no-ansi
+# deps layer (cached unless pyproject.toml or uv.lock change)
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
 
 # app layer
+COPY README.md ./
 COPY vulners_mcp ./vulners_mcp
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# --- run stage: minimal image ---
+FROM python:3.14.3-slim-trixie
+
+LABEL io.modelcontextprotocol.server.name="io.github.vulnersCom/vulners-mcp"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FASTMCP_HOST=0.0.0.0 \
+    FASTMCP_PORT=8000
+
+WORKDIR /app
+
+# copy venv from build stage
+COPY --from=build /app/.venv /app/.venv
+COPY --from=build /app/vulners_mcp /app/vulners_mcp
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 # non-root
 RUN useradd -u 10001 -m appuser
@@ -30,5 +45,4 @@ USER appuser
 
 EXPOSE 8000
 
-# Start the FastMCP server (Streamable HTTP at /mcp/)
 CMD ["python", "-m", "vulners_mcp"]
